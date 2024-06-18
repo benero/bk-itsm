@@ -32,6 +32,7 @@ from itertools import chain
 
 import requests
 import jsonfield
+from blueapps.contrib.xss.utils import texteditor_escape
 from bulk_update.helper import bulk_update
 from django.conf import settings
 from django.db import models, transaction
@@ -45,7 +46,6 @@ from common.cipher import AESVerification
 from common.redis import Cache
 from dateutil.relativedelta import relativedelta
 
-from common.utils import texteditor_escape
 from itsm.component.constants import (
     ACTION_CHOICES,
     ACTION_DICT,

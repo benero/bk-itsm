@@ -26,17 +26,14 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 # 开发框架公用方法
 # 1. 页面输入内容转义（防止xss攻击）
-# from common.utils import html_escape, url_escape, texteditor_escape
+# from common.utils import html_escape, url_escape
+# from blueapps.contrib.xss.utils import texteditor_escape
 # 2. 转义html内容
 # html_content = html_escape(input_content)
 # 3. 转义url内容
 # url_content = url_escape(input_content)
 # 4. 转义富文本内容
 # texteditor_content = texteditor_escape(input_content)
-
-
-from common.log import logger
-from common.pxfilter import XssHtml
 
 
 def html_escape(html, is_json=False):
@@ -69,21 +66,6 @@ def url_escape(url):
     url = url.replace('"', "")
     url = url.replace("'", "")
     return url
-
-
-def texteditor_escape(str_escape):
-    """
-    富文本处理
-    @param str_escape: 要检测的字符串
-    """
-    try:
-        parser = XssHtml()
-        parser.feed(str_escape)
-        parser.close()
-        return parser.get_html()
-    except Exception as e:
-        logger.error("js脚本注入检测发生异常，错误信息：%s" % e)
-        return str_escape
 
 
 def cmp(a, b):
