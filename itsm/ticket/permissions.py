@@ -249,9 +249,8 @@ class EventLogPermissionValidate(permissions.BasePermission):
             return True
 
         ticket_id = request.query_params.get("ticket")
-        try:
-            ticket = Ticket.objects.get(id=ticket_id)
-        except Ticket.DoesNotExist:
+        ticket = Ticket.objects.filter(id=ticket_id).first()
+        if ticket is None:
             self.message = _("单据不存在：%s，请检查") % ticket_id
             return False
 
@@ -330,8 +329,51 @@ class CommentPermissionValidate(permissions.BasePermission):
 
 
 class RemarkPermissionValidate(permissions.BasePermission):
+    """评论 (TicketRemark) 权限。
+
+    - 集合级（list / tree_view / create）按 ticket_id 反查归属，保证：
+      - 只读：调用方对该单据具备 ``can_view``；
+      - 写入：调用方还需 ``can_operate`` 或 ITSM 超管。
+    - 对象级（update / destroy）保留原有 creator/operator 判定。
+    """
+
+    SAFE_ACTIONS = ("list", "retrieve", "tree_view")
+
     def __init__(self):
         self.message = _("抱歉，您无权处理该单据的评论信息")
+
+    def _resolve_ticket_id(self, request, view):
+        action = getattr(view, "action", None)
+        if action in self.SAFE_ACTIONS:
+            return request.query_params.get("ticket_id")
+        return request.data.get("ticket_id") or request.query_params.get("ticket_id")
+
+    def has_permission(self, request, view):
+        username = request.user.username
+        if UserRole.is_itsm_superuser(username):
+            return True
+
+        action = getattr(view, "action", None)
+        # retrieve / update / destroy 通过 has_object_permission 兜底
+        if action in ("retrieve", "update", "partial_update", "destroy"):
+            return True
+
+        ticket_id = self._resolve_ticket_id(request, view)
+        if not ticket_id:
+            return True
+
+        ticket = Ticket.objects.filter(id=ticket_id).first()
+        if ticket is None:
+            self.message = _("单据不存在：%s，请检查") % ticket_id
+            return False
+
+        if request.method in permissions.SAFE_METHODS:
+            return ticket.can_view(username)
+
+        # 写动作：写评论必须能查看该单据，且具备处理人身份或为提单人
+        if not ticket.can_view(username):
+            return False
+        return ticket.can_operate(username) or username == ticket.creator
 
     def has_object_permission(self, request, view, obj):
 

@@ -105,7 +105,21 @@ class IamAuthPermit(permissions.BasePermission):
                 apply_actions.append("{}_create".format(resource_type))
             if "project_key" in request.data:
                 return self.iam_create_auth(request, apply_actions)
-        return True
+            return True
+
+        # 列表/详情等读操作交给 has_object_permission 或子类策略
+        if request.method in permissions.SAFE_METHODS:
+            return True
+
+        # 集合级写动作（不含 detail，对象级写动作走 has_object_permission）
+        # 防御未在 spec 覆盖的自定义写 action 越过 IAM 直达视图。
+        if getattr(view, "detail", False):
+            return True
+
+        if not apply_actions:
+            return True
+
+        return self.iam_auth(request, apply_actions)
 
     def has_object_permission(self, request, view, obj, **kwargs):
         # 关联实例的请求，需要针对对象进行鉴权

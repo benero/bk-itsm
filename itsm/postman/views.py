@@ -39,6 +39,7 @@ from itsm.component.dlls.component import ComponentLibrary
 from itsm.component.drf import viewsets as component_viewsets
 from itsm.component.drf.exception import ValidationError
 from itsm.component.drf.mixins import DynamicListModelMixin
+from itsm.component.drf.permissions import IsManager
 from itsm.component.esb.backend_component import bk
 from itsm.component.exceptions import NotAllowedError, ParamError, RpcAPIError
 from itsm.component.utils.client_backend_query import get_components, get_systems
@@ -202,7 +203,8 @@ class RemoteApiViewSet(DynamicListModelMixin, ModelViewSet):
     permission_action_mapping = {
         "list": ["project_view"],
     }
-    permission_free_actions = ["run_api"]
+    # run_api 必须走对象级 IAM（项目内 project_view / 平台公共登录态），不再放任意登录用户调用。
+    permission_free_actions = []
 
     filter_fields = {
         "is_activated": ["exact"],
@@ -254,8 +256,10 @@ class RemoteApiViewSet(DynamicListModelMixin, ModelViewSet):
     @action(detail=False, methods=["post"])
     def batch_delete(self, request, *args, **kwargs):
         """批量删除操作
-        TODO: 缺少负责人鉴权
+
+        鉴权：仅创建人或 ITSM 超管可删除；防止项目成员相互覆盖配置。
         """
+        from itsm.role.models import UserRole
 
         id_list = [i for i in request.data.get("id").split(",") if i.isdigit()]
 
@@ -270,6 +274,14 @@ class RemoteApiViewSet(DynamicListModelMixin, ModelViewSet):
         project_keys = [i.remote_system.project_key for i in will_deleted]
         if len(set(project_keys)) != 1:
             raise ValidationError(_("接口数量异常，请刷新后重试"))
+
+        username = request.user.username
+        if not UserRole.is_itsm_superuser(username):
+            unauth_creators = {
+                api.creator for api in will_deleted if api.creator != username
+            }
+            if unauth_creators:
+                raise ValidationError(_("仅可删除自己创建的接口"))
 
         will_deleted.delete()
         return Response(real_deleted)
@@ -322,6 +334,9 @@ class RemoteApiViewSet(DynamicListModelMixin, ModelViewSet):
 
 
 class RpcApiViewSet(component_viewsets.APIView):
+    # 仅流程管理员/资源负责人可触发 RPC 组件调用；GET 列表登录态可读。
+    permission_classes = (IsManager,)
+
     def get(self, request, *args, **kwargs):
         """获取rpc的API列表"""
         ret = []

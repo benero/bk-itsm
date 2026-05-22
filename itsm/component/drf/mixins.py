@@ -25,6 +25,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 from rest_framework import status
 from rest_framework.mixins import ListModelMixin
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from itsm.component.constants import ResponseCodeStatus
@@ -34,8 +35,9 @@ from itsm.component.utils.basic import dotted_name
 class ApiGenericMixin(object):
     """API视图类通用函数"""
 
-    # TODO 权限部分加载基类中
-    permission_classes = ()
+    # 默认要求登录态；对于真正需要匿名访问的视图（healthz/ping/index/get_footer/IAM 回调等），
+    # 须显式覆盖 permission_classes 为 (AllowAny,) 或继续使用 login_exempt 装饰器。
+    permission_classes = (IsAuthenticated,)
 
     def finalize_response(self, request, response, *args, **kwargs):
         """统一数据返回格式"""

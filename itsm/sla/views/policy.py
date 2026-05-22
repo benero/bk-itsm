@@ -30,6 +30,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from itsm.component.drf.exception import ValidationError
+from itsm.component.drf.permissions import IamAuthSystemPermit
 from itsm.component.drf.viewsets import NormalModelViewSet, AuthModelViewSet
 from itsm.sla.models import (
     ActionPolicy,
@@ -58,7 +59,7 @@ class SlaTimerRuleViewSet(ModelViewSet):
     serializer_class = SlaTimerRuleSerializer
     queryset = SlaTimerRule.objects.all()
     pagination_class = None
-    permission_classes = ()
+    permission_classes = (IamAuthSystemPermit,)
 
     filter_fields = {
         "service_type": ["exact", "in"],
@@ -210,7 +211,7 @@ class SlaViewSet(AuthModelViewSet):
                 raise ValidationError(_("抱歉, 该协议下存在运行中的单据, 无法禁用!"))
         super(SlaViewSet, self).perform_create(serializer)
 
-    @action(detail=False, methods=["put"])
+    @action(detail=False, methods=["put"], permission_classes=(IamAuthSystemPermit,))
     def ticket_highlight(self, request, *args, **kwargs):
         alert_color = request.data.get("alert_color")
         timeout_color = request.data.get("timeout_color")

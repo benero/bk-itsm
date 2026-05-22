@@ -34,7 +34,7 @@ from wsgiref.util import FileWrapper
 
 from django.conf import settings
 from django.db import connection
-from django.http import StreamingHttpResponse
+from django.http import StreamingHttpResponse, HttpResponseForbidden
 from django.utils.encoding import escape_uri_path
 from django.utils.translation import gettext as _
 from django.views.decorators.csrf import csrf_exempt
@@ -97,16 +97,76 @@ def compile_file_path(request):
     return file_path, tmp_key
 
 
+def _check_resource_access(request):
+    """
+    校验上传/下载操作所属资源的访问权限。
+
+    - ticket_id 存在：要求当前用户是该单据的处理人 / 创建人 / 可操作人 / ITSM 超管。
+    - 仅有 workflow_id：要求 workflow_manage IAM 权限。
+    - 都没有：拒绝。
+
+    返回值：(allowed: bool, error_message: str)
+    """
+    from itsm.role.models import UserRole
+    from itsm.ticket.models import Ticket
+    from itsm.workflow.models import Workflow
+
+    username = getattr(request.user, "username", "") or ""
+    if not username:
+        return False, _("请先登录")
+
+    if UserRole.is_itsm_superuser(username):
+        return True, ""
+
+    ticket_id = request.GET.get("ticket_id") or request.POST.get("ticket_id")
+    workflow_id = request.GET.get("workflow_id") or request.POST.get("workflow_id")
+
+    if ticket_id:
+        try:
+            ticket = Ticket.objects.get(pk=ticket_id)
+        except Ticket.DoesNotExist:
+            return False, _("单据不存在")
+        if ticket.creator == username:
+            return True, ""
+        if username in (ticket.real_current_processors or []):
+            return True, ""
+        if ticket.can_operate(username):
+            return True, ""
+        return False, _("您无权访问该单据的附件")
+
+    if workflow_id:
+        try:
+            workflow = Workflow.objects.get(id=workflow_id)
+        except Workflow.DoesNotExist:
+            return False, _("流程不存在")
+        # Workflow.auth_resource 的实际 IAM 资源是其关联的 Service，且 IAM 模型只在 service
+        # 资源上注册了 service_manage / service_view 动作，因此这里使用 service_manage。
+        try:
+            IamAuthPermit().iam_auth(
+                request, ["service_manage"], workflow.get_iam_resource()
+            )
+        except Exception:
+            return False, _("您无该流程的管理权限")
+        return True, ""
+
+    return False, _("缺少 ticket_id / workflow_id，无法校验资源归属")
+
+
 @validate_filepath_settings
 @require_POST
 @csrf_exempt
 @validate_files_name
 def upload(request):
+    """根据 ticket_id 与 state_id 上传附件。
+
+    资源归属校验：
+    - ticket_id 必须属于当前用户可访问范围；
+    - 或携带 workflow_id 且具备 workflow_manage 权限。
     """
-    根据ticket_id 和 state_id上传文件
-    加入了default的原因支持预览测试
-    暂无权限控制
-    """
+
+    allowed, message = _check_resource_access(request)
+    if not allowed:
+        return HttpResponseForbidden(message)
 
     root = SystemSettings.objects.get(key="SYS_FILE_PATH").value
 
@@ -135,16 +195,28 @@ def upload(request):
 @require_GET
 @validate_file_name
 def download(request):
+    """根据 ticket_id 与 state_id 下载附件。
+
+    校验：
+    - 资源归属：与 upload 同；
+    - 路径越权防护：实际下载路径必须落在 SYS_FILE_PATH 下。
     """
-    根据ticket_id 和 state_id下载文件
-    暂无权限控制
-    """
+    allowed, message = _check_resource_access(request)
+    if not allowed:
+        return HttpResponseForbidden(message)
+
     file_path, tmp_key = compile_file_path(request)
     file_name = request.GET.get("file_name")
 
     download_file_path = os.path.join(file_path, file_name)
     if not store.exists(download_file_path):
         return Fail(_("文件【{}】不存在").format(file_name), "NO_SUCH_FILE").json()
+
+    sys_file_path = SystemSettings.objects.get(key="SYS_FILE_PATH").value
+    sys_root = os.path.realpath(sys_file_path)
+    real_target = os.path.realpath(download_file_path)
+    if os.path.commonpath([sys_root, real_target]) != sys_root:
+        return HttpResponseForbidden(_("非法的下载路径"))
 
     response = StreamingHttpResponse(FileWrapper(store.open(file_path, "rb"), 512))
     response["Content-Type"] = "application/octet-stream"

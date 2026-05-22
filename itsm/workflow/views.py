@@ -37,9 +37,12 @@ from django.utils.encoding import escape_uri_path
 from django.utils.translation import gettext as _
 from rest_framework import serializers, status, permissions
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.generics import get_object_or_404
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+
+from itsm.component.drf.permissions import IamAuthSystemPermit
 
 from business_rules.operators import (
     NumericType,
@@ -88,6 +91,7 @@ from itsm.component.utils.basic import create_version_number
 from itsm.component.utils.bk_bunch import bunchify
 from itsm.component.utils.misc import JsonEncoder
 from itsm.iadmin.models import SystemSettings
+from itsm.role.models import UserRole
 from itsm.service.models import Service
 from itsm.workflow import signals
 from itsm.workflow.models import (
@@ -980,13 +984,34 @@ class WorkflowVersionViewSet(
 
     @action(detail=False, methods=["post"])
     def batch_delete(self, request, *args, **kwargs):
-        """批量删除操作"""
+        """批量删除流程版本.
 
-        id_list = [i for i in request.data.get("id").split(",") if i.isdigit()]
+        鉴权约定（与 H-C 修复一致）:
+        - 仅创建人或 ITSM 超管可删除自己的版本，否则 PermissionDenied
+        - 已被 Service 占用的版本仍由 VersionDeletePermit 阻断（前置）
+        - 整体放入事务，单条不通过即整体回滚
+        """
 
+        id_list = [i for i in request.data.get("id", "").split(",") if i.isdigit()]
+        if not id_list:
+            return Response([])
+
+        username = request.user.username
+        is_superuser = UserRole.is_itsm_superuser(username)
         will_deleted = self.queryset.filter(id__in=id_list)
-        real_deleted = list(will_deleted.values_list("id", flat=True))
-        will_deleted.delete()
+
+        if not is_superuser:
+            unauthorized = will_deleted.exclude(creator=username).values_list(
+                "id", flat=True
+            )
+            if unauthorized:
+                raise PermissionDenied(
+                    _("您无权删除流程版本：{}").format(list(unauthorized))
+                )
+
+        with transaction.atomic():
+            real_deleted = list(will_deleted.values_list("id", flat=True))
+            will_deleted.delete()
 
         return Response(real_deleted)
 
@@ -1042,6 +1067,7 @@ class TableViewSet(component_viewsets.ModelViewSet):
 
     queryset = Table.objects.filter(is_builtin=True).order_by("-create_at")
     serializer_class = TableSerializer
+    permission_classes = (IsAuthenticated,)
     filter_fields = {
         "name": ["contains", "icontains"],
         "updated_by": ["contains"],
@@ -1081,6 +1107,7 @@ class TriggerViewSet(component_viewsets.ModelViewSet):
 
     queryset = Trigger.objects.all()
     serializer_class = TriggerSerializer
+    permission_classes = (IamAuthSystemPermit,)
     filter_fields = {"type": ["exact"], "workflow_id": ["exact"], "state_id": ["exact"]}
 
     def list(self, request, *args, **kwargs):

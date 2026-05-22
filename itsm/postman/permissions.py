@@ -90,9 +90,14 @@ class RemoteApiPermit(WorkflowElementManagePermission):
             return True
 
         if obj:
+            # retrieve / run_api：调试与查看动作走最低门槛
+            #   - 平台公共 API：登录态可读/可调试（不要求 public_apis_manage）
+            #   - 项目 API：要求 project_view，避免他项目成员越权调用项目的第三方接口
+            view_like_actions = ("retrieve", "run_api")
+
             # 平台公共 API 管理
             if obj.remote_system.project_key == PUBLIC_PROJECT_PROJECT_KEY:
-                if view.action == "retrieve":
+                if view.action in view_like_actions:
                     return True
                 return self.iam_auth(request, ["public_apis_manage"])
 
@@ -100,7 +105,7 @@ class RemoteApiPermit(WorkflowElementManagePermission):
             project_key = obj.remote_system.project_key
             project = Project.objects.get(pk=project_key)
             apply_actions = ["system_settings_manage"]
-            if view.action == "retrieve":
+            if view.action in view_like_actions:
                 apply_actions = ["project_view"]
                 return self.iam_auth(request, apply_actions, project)
         return True
