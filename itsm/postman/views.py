@@ -44,7 +44,12 @@ from itsm.component.esb.backend_component import bk
 from itsm.component.exceptions import NotAllowedError, ParamError, RpcAPIError
 from itsm.component.utils.client_backend_query import get_components, get_systems
 from itsm.component.utils.misc import JsonEncoder
-from itsm.postman.constants import RPC_CODE
+from itsm.postman.constants import (
+    REMOTE_API_IMPORT_MAX_BYTES,
+    REMOTE_API_IMPORT_MAX_ITEMS,
+    REMOTE_API_IMPORT_REQUIRED_FIELDS,
+    RPC_CODE,
+)
 from itsm.postman.models import RemoteApi, RemoteApiInstance, RemoteSystem
 from itsm.postman.permissions import RemoteApiPermit, RemoteApiInstancePermit
 from itsm.postman.rpc.core.request import CompRequest
@@ -311,26 +316,66 @@ class RemoteApiViewSet(DynamicListModelMixin, ModelViewSet):
     def imports(self, request, pk=None):
         """
         导入Api接口
+
+        约束（防滥用）：
+        - 仅 ``pk == "0"`` 路径接受导入；其他 pk 一律拒绝。
+        - 文件体积不得超过 ``REMOTE_API_IMPORT_MAX_BYTES``。
+        - 顶层必须为 JSON 数组，长度不得超过 ``REMOTE_API_IMPORT_MAX_ITEMS``。
+        - 每个条目必须为 dict 且包含 ``REMOTE_API_IMPORT_REQUIRED_FIELDS`` 全部字段；
+          不满足者跳过并计入失败数，避免单个坏数据中断整批。
         """
-        if pk == "0":
-            apis = []
+        if pk != "0":
+            raise NotAllowedError(_("暂不支持当前操作"))
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ParamError(_("请上传待导入的json文件"))
+
+        if upload.size is not None and upload.size > REMOTE_API_IMPORT_MAX_BYTES:
+            raise ParamError(
+                _("导入文件大小超过限制（最大 {limit} 字节）").format(
+                    limit=REMOTE_API_IMPORT_MAX_BYTES
+                )
+            )
+
+        raw = upload.read(REMOTE_API_IMPORT_MAX_BYTES + 1)
+        if len(raw) > REMOTE_API_IMPORT_MAX_BYTES:
+            raise ParamError(
+                _("导入文件大小超过限制（最大 {limit} 字节）").format(
+                    limit=REMOTE_API_IMPORT_MAX_BYTES
+                )
+            )
+
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            raise ParamError(_("文件格式有误，请提供从本系统导出的json文件"))
+
+        if not isinstance(data, list):
+            raise ParamError(_("文件内容必须为JSON数组"))
+
+        if len(data) > REMOTE_API_IMPORT_MAX_ITEMS:
+            raise ParamError(
+                _("单次导入条目数超过限制（最大 {limit} 条）").format(
+                    limit=REMOTE_API_IMPORT_MAX_ITEMS
+                )
+            )
+
+        remote_system = request.data.get("remote_system", "0")
+        apis = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if not all(item.get(f) for f in REMOTE_API_IMPORT_REQUIRED_FIELDS):
+                continue
             try:
-                remote_system = request.data.get("remote_system", "0")
-                data = json.loads(request.FILES.get("file").read())
-            except ValueError:
-                raise ParamError(_("文件格式有误，请提供从本系统导出的json文件"))
+                item["remote_system_id"] = remote_system
+                api = RemoteApi.restore_api(item, request.user.username)
+                apis.append(api)
+            except Exception as e:
+                logger.error("import workflow exception: %s" % e)
 
-            for item in data:
-                try:
-                    item["remote_system_id"] = remote_system
-                    api = RemoteApi.restore_api(item, request.user.username)
-                    apis.append(api)
-                except Exception as e:
-                    logger.error("import workflow exception: %s" % e)
-
-            return Response({"success": len(apis), "failed": len(data) - len(apis)})
-
-        raise NotAllowedError(_("暂不支持当前操作"))
+        return Response({"success": len(apis), "failed": len(data) - len(apis)})
 
 
 class RpcApiViewSet(component_viewsets.APIView):

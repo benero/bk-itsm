@@ -29,8 +29,10 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from rest_framework.permissions import IsAuthenticated
+
 from itsm.component.drf.exception import ValidationError
-from itsm.component.drf.permissions import IamAuthSystemPermit
+from itsm.component.drf.permissions import IamAuthProjectViewPermit, IamAuthSystemPermit
 from itsm.component.drf.viewsets import NormalModelViewSet, AuthModelViewSet
 from itsm.sla.models import (
     ActionPolicy,
@@ -127,6 +129,7 @@ class PriorityPolicyViewSet(ModelViewSet):
     serializer_class = PriorityPolicySerializer
     queryset = PriorityPolicy.objects.all()
     pagination_class = None
+    permission_classes = (IamAuthProjectViewPermit,)
 
     filter_fields = {
         "priority": ["exact", "in"],
@@ -141,6 +144,7 @@ class ActionPolicyViewSet(ModelViewSet):
     serializer_class = ActionPolicySerializer
     queryset = ActionPolicy.objects.all()
     pagination_class = None
+    permission_classes = (IamAuthProjectViewPermit,)
 
     filter_fields = {
         "name": ["exact", "in"],
@@ -228,3 +232,4 @@ class TicketHighlightViewSet(NormalModelViewSet):
 
     serializer_class = TicketHighlightSerializer
     queryset = SlaTicketHighlight.objects.all()
+    permission_classes = (IsAuthenticated,)
