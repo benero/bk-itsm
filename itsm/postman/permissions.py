@@ -30,7 +30,11 @@ from itsm.postman.models import RemoteSystem, RemoteApi, RemoteApiInstance
 from django.utils.translation import gettext as _
 
 from itsm.project.models import Project
+from itsm.workflow.models import Workflow
 from itsm.workflow.permissions import WorkflowElementManagePermission
+
+# 流程编排型 RPC 组件的 source_uri 集合，这些组件依赖 workflow 上下文
+WORKFLOW_RPC_SOURCES = frozenset(["state_fields", "table_fields", "flow_states"])
 
 
 class IsObjManager(perm.IsManager):
@@ -39,6 +43,44 @@ class IsObjManager(perm.IsManager):
     """
 
     pass
+
+
+class RpcApiPermit(perm.IamAuthPermit):
+    """
+    /api/postman/rpc_api/ 权限控制：
+    - GET：登录态可读（获取 RPC 组件列表，无敏感数据）
+    - POST：
+        - source_uri 属于流程编排型（state_fields / table_fields / flow_states）
+          且 trigger_source_type=workflow 时，校验对应 workflow 的 service_manage 权限
+        - 其他 source_uri（ticket_status / service_catalog 等）：登录态可访问
+    """
+
+    def has_permission(self, request, view):
+        # GET 请求：登录态可读
+        if request.method in ("GET",):
+            return True
+
+        # POST 请求：按 source_uri 分类鉴权
+        source_uri = request.data.get("source_uri", "")
+
+        # 非流程编排型组件，登录态可访问
+        if source_uri not in WORKFLOW_RPC_SOURCES:
+            return True
+
+        # 流程编排型组件：必须带 trigger_source_type=workflow + trigger_source_id
+        trigger_source_type = request.data.get("trigger_source_type", "")
+        trigger_source_id = request.data.get("trigger_source_id")
+
+        if trigger_source_type != "workflow" or not trigger_source_id:
+            # 参数不合法，直接拒绝，避免绕过鉴权
+            return False
+
+        try:
+            flow = Workflow.objects.get(id=trigger_source_id)
+        except Workflow.DoesNotExist:
+            return False
+
+        return self.iam_auth(request, ["service_manage"], flow.get_iam_resource())
 
 
 class RemoteApiPermit(WorkflowElementManagePermission):

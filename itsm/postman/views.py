@@ -39,7 +39,7 @@ from itsm.component.dlls.component import ComponentLibrary
 from itsm.component.drf import viewsets as component_viewsets
 from itsm.component.drf.exception import ValidationError
 from itsm.component.drf.mixins import DynamicListModelMixin
-from itsm.component.drf.permissions import IsManager
+from itsm.postman.permissions import RemoteApiPermit, RemoteApiInstancePermit, RpcApiPermit
 from itsm.component.esb.backend_component import bk
 from itsm.component.exceptions import NotAllowedError, ParamError, RpcAPIError
 from itsm.component.utils.client_backend_query import get_components, get_systems
@@ -335,7 +335,7 @@ class RemoteApiViewSet(DynamicListModelMixin, ModelViewSet):
 
 class RpcApiViewSet(component_viewsets.APIView):
     # 仅流程管理员/资源负责人可触发 RPC 组件调用；GET 列表登录态可读。
-    permission_classes = (IsManager,)
+    permission_classes = (RpcApiPermit,)
 
     def get(self, request, *args, **kwargs):
         """获取rpc的API列表"""
