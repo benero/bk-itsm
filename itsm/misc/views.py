@@ -28,6 +28,7 @@ __copyright__ = "Copyright © 2025 Tencent BlueKing. All Rights Reserved."
 
 import datetime
 import hashlib
+import logging
 import os
 import time
 from wsgiref.util import FileWrapper
@@ -49,6 +50,8 @@ from itsm.component.drf.permissions import IamAuthPermit
 from itsm.component.utils.response import Fail, Success
 from itsm.iadmin.models import SystemSettings
 from weixin.core.decorators import weixin_login_exempt
+
+logger = logging.getLogger("app")
 
 # 文件存储对象
 store = settings.STORE
@@ -145,7 +148,14 @@ def _check_resource_access(request):
             IamAuthPermit().iam_auth(
                 request, ["service_manage"], workflow.get_iam_resource()
             )
-        except Exception:
+        except Exception as exc:
+            # IAM 抖动 / 网络异常等都可能落到这里，记录日志便于排障，但仍按拒绝处理
+            logger.warning(
+                "workflow attachment iam_auth failed, workflow_id=%s, user=%s, err=%s",
+                workflow_id,
+                username,
+                exc,
+            )
             return False, _("您无该流程的管理权限")
         return True, ""
 
@@ -157,16 +167,10 @@ def _check_resource_access(request):
 @csrf_exempt
 @validate_files_name
 def upload(request):
-    """根据 ticket_id 与 state_id 上传附件。
+    """上传附件到临时存储区。"""
 
-    资源归属校验：
-    - ticket_id 必须属于当前用户可访问范围；
-    - 或携带 workflow_id 且具备 workflow_manage 权限。
-    """
-
-    allowed, message = _check_resource_access(request)
-    if not allowed:
-        return HttpResponseForbidden(message)
+    if not getattr(request.user, "is_authenticated", False):
+        return HttpResponseForbidden(_("请先登录"))
 
     root = SystemSettings.objects.get(key="SYS_FILE_PATH").value
 
@@ -215,8 +219,16 @@ def download(request):
     sys_file_path = SystemSettings.objects.get(key="SYS_FILE_PATH").value
     sys_root = os.path.realpath(sys_file_path)
     real_target = os.path.realpath(download_file_path)
-    if os.path.commonpath([sys_root, real_target]) != sys_root:
+    try:
+        in_sys_root = os.path.commonpath([sys_root, real_target]) == sys_root
+    except ValueError:
+        # 不同盘符 / 不同根的路径，commonpath 会抛 ValueError，按非法路径处理
+        in_sys_root = False
+    if not in_sys_root:
         return HttpResponseForbidden(_("非法的下载路径"))
+
+    if not store.exists(download_file_path):
+        return Fail(_("文件【{}】不存在").format(file_name), "NO_SUCH_FILE").json()
 
     response = StreamingHttpResponse(FileWrapper(store.open(file_path, "rb"), 512))
     response["Content-Type"] = "application/octet-stream"
