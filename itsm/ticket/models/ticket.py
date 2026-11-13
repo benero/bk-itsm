@@ -3129,7 +3129,6 @@ class Ticket(Model, BaseTicket):
                 "update_at": str(self.update_at),
                 "updated_by": self.updated_by,
                 "approve_result": self.get_ticket_result(),
-
                 "token": CallbackToken.generate(self.sn, self.current_status),
                 "last_approver": self.get_last_approver(),
             }
@@ -4140,6 +4139,13 @@ class Ticket(Model, BaseTicket):
     def prepare_initial_fields(self, fields, operator=""):
         self.prepare_all_fields()
         self.fill_state_fields(fields, operator=operator)
+        # Bind effective values after request overrides, including omitted defaults.
+        # Shared template attachments live in choice and must remain unbound.
+        bind_attachments(
+            self.pk,
+            [field.value for field in self.fields.filter(type="FILE")],
+            operator,
+        )
 
     def do_after_create(
         self,

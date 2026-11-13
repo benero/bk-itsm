@@ -1,6 +1,7 @@
 """Database-backed tests of registration, atomic binding and download checks."""
 
 import ast
+import copy
 import json
 import logging
 import os
@@ -568,3 +569,134 @@ def test_automated_field_writes_reject_pending_upload_before_update(component):
     bind_attachments(1, [value(record)], "alice")
     assert execute(service) is True
     fields.update.assert_called_once()
+
+
+def initialize_fields(defaults, submitted, operator="alice", choices=None):
+    """Run production initialization; only the ticket-field ORM is isolated."""
+    persisted = []
+
+    class Fields:
+        def filter(self, **filters):
+            return [
+                field
+                for field in persisted
+                if ("key__in" not in filters or field.key in filters["key__in"])
+                and ("type" not in filters or field.type == filters["type"])
+            ]
+
+    class Field:
+        objects = SimpleNamespace(bulk_create=lambda fields: persisted.extend(fields))
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.meta = {}
+
+        @property
+        def value(self):
+            return getattr(self, "_value", "")
+
+        @value.setter
+        def value(self, value):
+            self._value = value
+
+    namespace = {
+        "transaction": transaction,
+        "copy": copy,
+        "TicketField": Field,
+        "TicketStatus": SimpleNamespace(
+            objects=SimpleNamespace(get_status_choice=lambda value: [])
+        ),
+        "FIELD_STATUS": "status",
+        "FIELD_PRIORITY": "priority",
+        "bind_attachments": bind_attachments,
+        "bulk_update": Mock(),
+        "FIELD_IGNORE_ESCAPE": ["FILE"],
+        "datetime": Mock(now=lambda: None),
+    }
+    ticket = SimpleNamespace(
+        pk=1,
+        service_type="request",
+        fields=Fields(),
+        flow=SimpleNamespace(
+            table={"fields": []},
+            fields={
+                key: {
+                    "id": index,
+                    "key": key,
+                    "type": "FILE",
+                    "default": default,
+                    "choice": choices or {},
+                }
+                for index, (key, default) in enumerate(defaults.items(), 1)
+            },
+        ),
+    )
+    prepare = load_method("ticket/models/ticket.py", "prepare_all_fields", namespace)
+    fill = load_method("ticket/models/ticket.py", "fill_state_fields", namespace)
+    initialize = load_method(
+        "ticket/models/ticket.py", "prepare_initial_fields", namespace
+    )
+    ticket.prepare_all_fields = lambda: prepare(ticket)
+    ticket.fill_state_fields = lambda fields, operator: fill(ticket, fields, operator)
+    initialize(ticket, submitted, operator=operator)
+    return persisted
+
+
+def test_omitted_file_default_is_bound_and_downloadable():
+    record = upload()
+    fields = initialize_fields({"attachment": json.dumps(value(record))}, [])
+    assert json.loads(fields[0].value) == value(record)
+    record.refresh_from_db()
+    assert record.ticket_id == 1
+    authorize_download(record.path, ticket_id=1)
+    with pytest.raises(PermissionDenied):
+        authorize_download(record.path, ticket_id=2)
+
+
+@pytest.mark.parametrize("owner", ["foreign_uploader", "other_ticket", "missing"])
+def test_invalid_file_default_rejects_and_rolls_back_submitted_binding(owner):
+    own = upload()
+    foreign = upload(
+        "b" * 32,
+        uploader="bob" if owner == "foreign_uploader" else "alice",
+        ticket_id=2 if owner == "other_ticket" else None,
+    )
+    foreign_value = value(foreign)
+    if owner == "missing":
+        foreign.delete()
+    with pytest.raises(PermissionDenied):
+        initialize_fields(
+            {"default_file": json.dumps(foreign_value), "submitted_file": ""},
+            [{"key": "submitted_file", "value": json.dumps(value(own))}],
+        )
+    own.refresh_from_db()
+    assert own.ticket_id is None
+
+
+@pytest.mark.parametrize("replacement", ["", "new"])
+def test_overridden_default_is_not_bound(replacement):
+    default = upload(uploader="bob")
+    submitted = upload("b" * 32)
+    new_value = json.dumps(value(submitted)) if replacement else ""
+    initialize_fields(
+        {"attachment": json.dumps(value(default))},
+        [{"key": "attachment", "value": new_value}],
+    )
+    default.refresh_from_db()
+    submitted.refresh_from_db()
+    assert default.ticket_id is None
+    assert submitted.ticket_id == (1 if replacement else None)
+
+
+def test_historical_default_and_template_choice_remain_unbound():
+    template = upload(uploader="template_owner")
+    legacy = {"old": {"path": "fields/old-file", "name": "legacy.txt"}}
+    fields = initialize_fields(
+        {"attachment": json.dumps(legacy)}, [], choices=value(template)
+    )
+    assert json.loads(fields[0].value) == legacy
+    template.refresh_from_db()
+    assert template.ticket_id is None
+    assert Attachment.objects.count() == 1
+    authorize_download("fields/old-file", ticket_id=1)
+    authorize_download(template.path, allow_unbound=True)
